@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound;
 use std::str::FromStr;
 use std::sync::{atomic, Arc};
 use std::time::Duration;
@@ -18,14 +19,15 @@ use rust_decimal::Decimal;
 use serde::{de, Deserialize, Serialize};
 use snafu::{OptionExt, ResultExt};
 use tokio::{
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot, Mutex, RwLock},
     task::JoinHandle,
+    time,
 };
 
 use crate::{
     client::SClient,
     error::*,
-    spot::{Kline, KlineInterval, OrderBook, Symbol, Ticker, TradeSide},
+    spot::*,
     time::{ts_nanoseconds_str, Time},
     utils::is_false,
 };
@@ -67,7 +69,9 @@ impl WsApi for Ws {
         let (ws_stream, _) = connect_async(url).await.context(WebsocketSnafu)?;
 
         let (req_tx, req_rx) = mpsc::channel(1);
+        let client = self.0.clone();
         let closed = Arc::new(Mutex::new(false));
+
         let inflight_reqs = HashMap::new();
         let ping_interval = server.ping_interval;
         let subscriptions = HashMap::new();
@@ -83,6 +87,7 @@ impl WsApi for Ws {
         let hnd = tokio::spawn(sub_mgr.run());
 
         Ok(Connection {
+            client,
             closed,
             hnd,
             req_tx,
@@ -92,6 +97,7 @@ impl WsApi for Ws {
 
 #[derive(Debug)]
 pub struct Connection {
+    client: SClient,
     closed: Arc<Mutex<bool>>,
     hnd: JoinHandle<()>,
     req_tx: mpsc::Sender<SubscriptionRequest>,
@@ -108,8 +114,14 @@ impl Connection {
     }
 
     pub async fn live_order_book(&self, symbol: &Symbol) -> Result<LiveOrderBook, Error> {
-        // let stream = self.subscribe(TopicLevel2::new(symbol.clone())).await?;
-        LiveOrderBook::new()
+        let stream = self.subscribe(TopicLevel2::new(symbol.clone())).await?;
+        let order_book = self
+            .client
+            .market()
+            .order_book(symbol, OrderBookDepth::Full)
+            .await?;
+
+        Ok(LiveOrderBook::new(order_book, stream))
     }
 
     pub async fn subscribe<T: TopicToData>(
@@ -168,14 +180,92 @@ pub struct Level3Trade {
 
 #[derive(Clone, Debug)]
 pub struct LiveOrderBook {
+    inner: Arc<RwLock<LiveOrderBookInner>>,
+}
+
+#[derive(Debug)]
+struct LiveOrderBookInner {
     order_book: OrderBook,
+    still_alive: bool,
 }
 
 impl LiveOrderBook {
-    fn new() -> Result<Self, Error> {
-        let order_book = Default::default();
+    fn new<S>(order_book: OrderBook, mut stream: S) -> Self
+    where
+        S: Stream<Item = Result<BTreeMap<Decimal, (bool, Decimal, Decimal)>, Error>>
+            + Send
+            + Unpin
+            + 'static,
+    {
+        let inner = Arc::new(RwLock::new(LiveOrderBookInner {
+            order_book,
+            still_alive: true,
+        }));
+        let live_order_book = Self {
+            inner: inner.clone(),
+        };
 
-        Ok(Self { order_book })
+        tokio::spawn(async move {
+            let mut next_book = inner.read().await.order_book.clone();
+            let mut last_seq = next_book.sequence;
+            let mut sync_book = time::interval(Duration::from_millis(500));
+            sync_book.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    _ = sync_book.tick() => {
+                        if last_seq < next_book.sequence {
+                            last_seq = next_book.sequence;
+                            inner.write().await.order_book = next_book.clone();
+                        }
+                    },
+                    result = stream.next() => match result {
+                        Some(Ok(updates)) => {
+                            // Update the next_book according to the Level 2 sequencing rules.
+                            // First rule, we want to start by only looking at sequence updates that
+                            // are greater than the next book's current sequence number.
+                            for (&seq, &(is_bid, price, size)) in updates.range((Bound::Excluded(next_book.sequence), Bound::Unbounded)) {
+                                // For each sequence update, the rules are as follows:
+                                //   1. If the price is 0, ignore it.
+                                //   2. If the size is 0, remove it from the book.
+                                //   3. If neither 1 or 2, set the new size for the price.
+                                if price > Decimal::ZERO {
+                                    next_book.bids.remove(&price).or_else(|| next_book.asks.remove(&price));
+                                    if size > Decimal::ZERO {
+                                        if is_bid {
+                                            next_book.bids.insert(price, size);
+                                        } else {
+                                            next_book.asks.insert(price, size);
+                                        }
+                                    }
+                                }
+
+                                next_book.sequence = seq;
+                            }
+                        }
+                        Some(Err(_)) | None => {
+                            inner.write().await.still_alive = false;
+                            break;
+                        }
+                    },
+                }
+            }
+        });
+
+        live_order_book
+    }
+
+    pub async fn read<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&OrderBook) -> R,
+    {
+        f(&self.inner.read().await.order_book)
+    }
+
+    pub async fn still_alive(&self) -> bool {
+        self.inner.read().await.still_alive
     }
 }
 
@@ -388,21 +478,6 @@ impl TopicToData for TopicKlines {
 }
 
 #[derive(Clone, Debug)]
-pub struct TopicLevel2(Topic);
-
-impl TopicLevel2 {
-    pub fn new(symbol: Symbol) -> Self {
-        Self(Topic::Level2(symbol))
-    }
-}
-
-impl From<TopicLevel2> for Topic {
-    fn from(t: TopicLevel2) -> Self {
-        t.0
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct TopicLevel2Best5(Topic);
 
 impl TopicLevel2Best5 {
@@ -541,7 +616,7 @@ impl From<WsSymbolSnapshot> for SymbolSnapshot {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConnectInfo {
     #[serde(rename = "instanceServers")]
@@ -549,7 +624,7 @@ struct ConnectInfo {
     token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConnectServer {
     endpoint: String,
@@ -558,7 +633,7 @@ struct ConnectServer {
     ping_interval: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ConnectProtocol {
     WebSocket,
@@ -566,7 +641,7 @@ enum ConnectProtocol {
     Unknown,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "lowercase", tag = "type")]
 enum Event {
     Ack {
@@ -585,6 +660,34 @@ enum Event {
     Welcome,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Level2Update {
+    changes: Level2Changes,
+}
+
+#[derive(Deserialize)]
+struct Level2Changes {
+    asks: Vec<(Decimal, Decimal, Decimal)>,
+    bids: Vec<(Decimal, Decimal, Decimal)>,
+}
+
+impl From<Level2Update> for BTreeMap<Decimal, (bool, Decimal, Decimal)> {
+    fn from(v: Level2Update) -> Self {
+        let mut set = BTreeMap::new();
+
+        for (price, size, seq) in v.changes.asks {
+            set.insert(seq, (false, price, size));
+        }
+
+        for (price, size, seq) in v.changes.bids {
+            set.insert(seq, (true, price, size));
+        }
+
+        set
+    }
+}
+
 static REQUEST_ID: atomic::AtomicU64 = atomic::AtomicU64::new(1);
 
 fn next_req_id() -> String {
@@ -593,7 +696,7 @@ fn next_req_id() -> String {
         .to_string()
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Serialize)]
 struct Request {
     id: String,
     #[serde(flatten)]
@@ -635,7 +738,7 @@ impl Request {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "lowercase", tag = "type")]
 enum RequestType {
     Subscribe { topic: Topic },
@@ -654,8 +757,8 @@ struct SubscriptionManager {
 
 impl SubscriptionManager {
     async fn run(mut self) {
-        let mut ping = tokio::time::interval(Duration::from_secs(self.ping_interval));
-        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut ping = time::interval(Duration::from_secs(self.ping_interval));
+        ping.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
         loop {
             let result = tokio::select! {
@@ -789,4 +892,23 @@ enum SubscriptionRequest {
     ),
     Unsubscribe(oneshot::Sender<Result<(), Error>>, Request),
     Close,
+}
+
+struct TopicLevel2(Topic);
+
+impl TopicLevel2 {
+    fn new(symbol: Symbol) -> Self {
+        Self(Topic::Level2(symbol))
+    }
+}
+
+impl From<TopicLevel2> for Topic {
+    fn from(t: TopicLevel2) -> Self {
+        t.0
+    }
+}
+
+impl TopicToData for TopicLevel2 {
+    type Data = Level2Update;
+    type Output = BTreeMap<Decimal, (bool, Decimal, Decimal)>;
 }
