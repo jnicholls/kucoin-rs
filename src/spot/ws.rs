@@ -1,5 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
-use std::ops::Bound;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{atomic, Arc};
 use std::time::Duration;
@@ -192,10 +191,7 @@ struct LiveOrderBookInner {
 impl LiveOrderBook {
     fn new<S>(order_book: OrderBook, mut stream: S) -> Self
     where
-        S: Stream<Item = Result<BTreeMap<Decimal, (bool, Decimal, Decimal)>, Error>>
-            + Send
-            + Unpin
-            + 'static,
+        S: Stream<Item = Result<Level2Update, Error>> + Send + Unpin + 'static,
     {
         let inner = Arc::new(RwLock::new(LiveOrderBookInner {
             order_book,
@@ -223,10 +219,18 @@ impl LiveOrderBook {
                     },
                     result = stream.next() => match result {
                         Some(Ok(updates)) => {
+                            let mut changes: Vec<_> = updates.changes.asks.into_iter().map(|change| (false, change))
+                                .chain(updates.changes.bids.into_iter().map(|change| (true, change)))
+                                .collect();
+                            if changes.len() > 1 {
+                                changes.sort_unstable_by_key(|&(_, (_, _, seq))| seq);
+                            }
+
                             // Update the next_book according to the Level 2 sequencing rules.
                             // First rule, we want to start by only looking at sequence updates that
                             // are greater than the next book's current sequence number.
-                            for (&seq, &(is_bid, price, size)) in updates.range((Bound::Excluded(next_book.sequence), Bound::Unbounded)) {
+                            let cur_seq = next_book.sequence;
+                            for (is_bid, (price, size, seq)) in changes.into_iter().skip_while(|&(_, (_, _, seq))| seq <= cur_seq) {
                                 // For each sequence update, the rules are as follows:
                                 //   1. If the price is 0, ignore it.
                                 //   2. If the size is 0, remove it from the book.
@@ -672,22 +676,6 @@ struct Level2Changes {
     bids: Vec<(Decimal, Decimal, Decimal)>,
 }
 
-impl From<Level2Update> for BTreeMap<Decimal, (bool, Decimal, Decimal)> {
-    fn from(v: Level2Update) -> Self {
-        let mut set = BTreeMap::new();
-
-        for (price, size, seq) in v.changes.asks {
-            set.insert(seq, (false, price, size));
-        }
-
-        for (price, size, seq) in v.changes.bids {
-            set.insert(seq, (true, price, size));
-        }
-
-        set
-    }
-}
-
 static REQUEST_ID: atomic::AtomicU64 = atomic::AtomicU64::new(1);
 
 fn next_req_id() -> String {
@@ -910,5 +898,5 @@ impl From<TopicLevel2> for Topic {
 
 impl TopicToData for TopicLevel2 {
     type Data = Level2Update;
-    type Output = BTreeMap<Decimal, (bool, Decimal, Decimal)>;
+    type Output = Self::Data;
 }
