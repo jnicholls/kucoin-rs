@@ -12,7 +12,8 @@ use serde::{de, Deserialize, Serialize};
 use crate::{
     client::SClient,
     error::{Error, ParseSnafu},
-    time::{ts_nanoseconds, ts_seconds, ts_seconds_str, Time},
+    spot::trade::Trade,
+    time::{ts_seconds, ts_seconds_str, Time},
     utils::iter_to_csv,
 };
 
@@ -727,57 +728,4 @@ impl hash::Hash for Ticker {
         self.sequence.hash(state);
         self.time.hash(state);
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Display, Serialize)]
-#[display(fmt = "{}: {} {} @ {}", time, side, size, price)]
-#[serde(rename_all = "camelCase")]
-pub struct Trade {
-    pub sequence: Decimal,
-    #[serde(with = "ts_nanoseconds")]
-    pub time: Time,
-    pub price: Decimal,
-    pub size: Decimal,
-    pub side: TradeSide,
-}
-
-impl Eq for Trade {}
-
-impl PartialEq for Trade {
-    fn eq(&self, other: &Self) -> bool {
-        self.sequence == other.sequence && self.time == other.time
-    }
-}
-
-impl Ord for Trade {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        match self.sequence.cmp(&other.sequence) {
-            cmp::Ordering::Equal => self.time.cmp(&other.time),
-            ordering => ordering,
-        }
-    }
-}
-
-impl PartialOrd for Trade {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl hash::Hash for Trade {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        self.sequence.hash(state);
-        self.time.hash(state);
-    }
-}
-
-#[derive(
-    Clone, Copy, Debug, Deserialize, Display, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-)]
-#[serde(rename_all = "camelCase")]
-pub enum TradeSide {
-    #[display(fmt = "buy")]
-    Buy,
-    #[display(fmt = "sell")]
-    Sell,
 }
