@@ -67,6 +67,37 @@ pub struct OrderRequest {
     stp: SelfTradePrevention,
 }
 
+impl OrderRequest {
+    pub fn new(
+        client_order_id: impl Into<String>,
+        side: TradeSide,
+        symbol: Symbol,
+        order_type: OrderTypeRequest,
+    ) -> Self {
+        let client_order_id = client_order_id.into();
+        let remark = None;
+        let stp = Default::default();
+
+        Self {
+            client_order_id,
+            side,
+            symbol,
+            order_type,
+            remark,
+            stp,
+        }
+    }
+
+    pub fn remark(self, remark: impl Into<String>) -> Self {
+        let remark = Some(remark.into());
+        Self { remark, ..self }
+    }
+
+    pub fn stp(self, stp: SelfTradePrevention) -> Self {
+        Self { stp, ..self }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Display, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OrderType {
@@ -100,11 +131,38 @@ pub struct OrderTypeLimit {
     visibility: OrderVisibility,
 }
 
+impl OrderTypeLimit {
+    pub fn new(price: Decimal, size: Decimal) -> Self {
+        let time_in_force = Default::default();
+        let visibility = Default::default();
+
+        Self {
+            price,
+            size,
+            time_in_force,
+            visibility,
+        }
+    }
+
+    pub fn time_in_force(self, time_in_force: TimeInForce) -> Self {
+        Self {
+            time_in_force,
+            ..self
+        }
+    }
+
+    pub fn visibility(self, visibility: OrderVisibility) -> Self {
+        Self { visibility, ..self }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OrderTypeMarket {
-    size: Option<Decimal>,
-    funds: Option<Decimal>,
+pub enum OrderTypeMarket {
+    #[serde(rename = "size")]
+    Base(Decimal),
+    #[serde(rename = "funds")]
+    Quote(Decimal),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Display, Serialize)]
