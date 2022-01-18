@@ -1,4 +1,5 @@
 use std::cmp;
+use std::collections::BTreeMap;
 use std::hash;
 
 use async_trait::async_trait;
@@ -9,13 +10,23 @@ use serde::{Deserialize, Serialize};
 use crate::{
     client::SClient,
     error::Error,
-    spot::market::Symbol,
+    spot::market::{CurrencyCode, Symbol},
     time::{ts_nanoseconds, Time},
 };
 
 #[async_trait]
 pub trait TradeApi {
-    async fn place_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
+    async fn cancel_all_orders(
+        &self,
+        trade_type: TradeType,
+        symbol: Option<&Symbol>,
+    ) -> Result<Vec<OrderId>, Error>;
+    async fn cancel_order_by_client_id(&self, client_id: &str) -> Result<bool, Error>;
+    async fn cancel_order_by_id(&self, order_id: &OrderId) -> Result<bool, Error>;
+    async fn get_order_by_client_id(&self, client_id: &str) -> Result<Order, Error>;
+    async fn get_order_by_id(&self, order_id: &OrderId) -> Result<Order, Error>;
+    async fn margin_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
+    async fn spot_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
 }
 
 struct Trade_(SClient);
@@ -28,7 +39,73 @@ impl SClient {
 
 #[async_trait]
 impl TradeApi for Trade_ {
-    async fn place_order(&self, req: &OrderRequest) -> Result<OrderId, Error> {
+    async fn cancel_all_orders(
+        &self,
+        trade_type: TradeType,
+        symbol: Option<&Symbol>,
+    ) -> Result<Vec<OrderId>, Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Response {
+            cancelled_order_ids: Vec<OrderId>,
+        }
+
+        let mut params = BTreeMap::new();
+        params.insert("tradeType", trade_type.to_string());
+        if let Some(symbol) = symbol {
+            params.insert("symbol", symbol.to_string());
+        }
+
+        self.0
+            .delete::<_, Response>("/api/v1/orders", params)
+            .await
+            .map(|r| r.cancelled_order_ids)
+    }
+
+    async fn cancel_order_by_client_id(&self, client_id: &str) -> Result<bool, Error> {
+        self.0
+            .delete::<_, ()>(&format!("/api/v1/order/client-order/{}", client_id), ())
+            .await?;
+
+        let order = self.get_order_by_client_id(client_id).await?;
+        Ok(!order.is_active)
+    }
+
+    async fn cancel_order_by_id(&self, order_id: &OrderId) -> Result<bool, Error> {
+        self.0
+            .delete::<_, ()>(&format!("/api/v1/orders/{}", order_id), ())
+            .await?;
+
+        let order = self.get_order_by_id(order_id).await?;
+        Ok(!order.is_active)
+    }
+
+    async fn get_order_by_client_id(&self, client_id: &str) -> Result<Order, Error> {
+        self.0
+            .get(&format!("/api/v1/order/client-order/{}", client_id), ())
+            .await
+    }
+
+    async fn get_order_by_id(&self, order_id: &OrderId) -> Result<Order, Error> {
+        self.0
+            .get(&format!("/api/v1/orders/{}", order_id), ())
+            .await
+    }
+
+    async fn margin_order(&self, req: &OrderRequest) -> Result<OrderId, Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Response {
+            order_id: OrderId,
+        }
+
+        self.0
+            .post::<_, Response>("/api/v1/margin/order", req)
+            .await
+            .map(|r| r.order_id)
+    }
+
+    async fn spot_order(&self, req: &OrderRequest) -> Result<OrderId, Error> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Response {
@@ -40,6 +117,37 @@ impl TradeApi for Trade_ {
             .await
             .map(|r| r.order_id)
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Order {
+    #[serde(alias = "orderId")]
+    pub id: OrderId,
+    pub symbol: Symbol,
+    #[serde(rename = "type")]
+    pub order_type: OrderType,
+    pub side: TradeSide,
+    pub price: Decimal,
+    pub size: Decimal,
+    pub funds: Decimal,
+    pub deal_funds: Decimal,
+    pub deal_size: Decimal,
+    pub fee: Decimal,
+    pub fee_currency: CurrencyCode,
+    pub stp: SelfTradePrevention,
+    #[serde(flatten)]
+    pub stop: StopOrder,
+    #[serde(flatten)]
+    pub time_in_force: TimeInForce,
+    #[serde(flatten)]
+    pub visibility: OrderVisibility,
+    #[serde(rename = "clientOid")]
+    pub client_order_id: String,
+    pub remark: Option<String>,
+    pub is_active: bool,
+    pub created_at: Time,
+    pub trade_type: TradeType,
 }
 
 #[derive(
@@ -89,6 +197,10 @@ impl OrderRequest {
     }
 
     pub fn remark(self, remark: impl Into<String>) -> Self {
+        // Remarks can only be 100 characters long at most.
+        let mut remark = remark.into();
+        remark.truncate(100);
+
         let remark = Some(remark.into());
         Self { remark, ..self }
     }
@@ -99,12 +211,16 @@ impl OrderRequest {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Display, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub enum OrderType {
     #[display(fmt = "limit")]
     Limit,
     #[display(fmt = "market")]
     Market,
+    #[display(fmt = "stop_limit")]
+    StopLimit,
+    #[display(fmt = "stop_market")]
+    StopMarket,
 }
 
 impl Default for OrderType {
@@ -206,6 +322,25 @@ impl Default for SelfTradePrevention {
     fn default() -> Self {
         Self::CancelNewest
     }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case", tag = "stop")]
+pub enum StopOrder {
+    Entry {
+        #[serde(rename = "stopTriggered")]
+        triggered: bool,
+        #[serde(rename = "stopPrice")]
+        price: Decimal,
+    },
+    Loss {
+        #[serde(rename = "stopTriggered")]
+        triggered: bool,
+        #[serde(rename = "stopPrice")]
+        price: Decimal,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Display, Serialize)]
