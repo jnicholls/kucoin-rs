@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     client::SClient,
     error::Error,
+    pagination::PagedStream,
     spot::market::{CurrencyCode, Symbol},
     time::{ts_nanoseconds, Time},
 };
@@ -25,6 +26,7 @@ pub trait TradeApi {
     async fn cancel_order_by_id(&self, order_id: &OrderId) -> Result<bool, Error>;
     async fn get_order_by_client_id(&self, client_id: &str) -> Result<Order, Error>;
     async fn get_order_by_id(&self, order_id: &OrderId) -> Result<Order, Error>;
+    fn get_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<Order>;
     async fn margin_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
     async fn spot_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
 }
@@ -92,6 +94,10 @@ impl TradeApi for Trade_ {
             .await
     }
 
+    fn get_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<Order> {
+        self.0.paged_get("/api/v1/orders", filter)
+    }
+
     async fn margin_order(&self, req: &OrderRequest) -> Result<OrderId, Error> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -143,7 +149,7 @@ pub struct Order {
     #[serde(flatten)]
     pub visibility: OrderVisibility,
     #[serde(rename = "clientOid")]
-    pub client_order_id: String,
+    pub client_order_id: Option<String>,
     pub remark: Option<String>,
     pub is_active: bool,
     pub created_at: Time,
@@ -161,6 +167,9 @@ impl OrderId {
         Self(id.into())
     }
 }
+
+#[derive(Serialize)]
+pub struct OrderFilter {}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -311,7 +320,7 @@ pub enum SelfTradePrevention {
     #[serde(rename = "CO")]
     CancelOldest,
     #[display(fmt = "CN")]
-    #[serde(rename = "CN")]
+    #[serde(alias = "", rename = "CN")]
     CancelNewest,
     #[display(fmt = "CB")]
     #[serde(rename = "CB")]

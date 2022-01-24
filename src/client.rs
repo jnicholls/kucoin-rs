@@ -81,7 +81,7 @@ macro_rules! http_verb {
     };
 }
 
-pub trait Api {
+pub trait Api: Send + Sync + 'static {
     fn host() -> &'static str;
 }
 
