@@ -24,10 +24,13 @@ pub trait TradeApi {
     ) -> Result<Vec<OrderId>, Error>;
     async fn cancel_order_by_client_id(&self, client_id: &str) -> Result<bool, Error>;
     async fn cancel_order_by_id(&self, order_id: &OrderId) -> Result<bool, Error>;
+    fn get_filled_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<FilledOrder>;
+    fn get_filled_orders_by_id<'a>(&'a self, order_id: &'a OrderId) -> PagedStream<FilledOrder>;
     async fn get_order_by_client_id(&self, client_id: &str) -> Result<Order, Error>;
     async fn get_order_by_id(&self, order_id: &OrderId) -> Result<Order, Error>;
     fn get_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<Order>;
-    async fn get_recent_orders<'a>(&'a self) -> Result<Vec<Order>, Error>;
+    async fn get_recent_filled_orders(&self) -> Result<Vec<FilledOrder>, Error>;
+    async fn get_recent_orders(&self) -> Result<Vec<Order>, Error>;
     async fn margin_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
     async fn spot_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
 }
@@ -83,6 +86,14 @@ impl TradeApi for Trade_ {
         Ok(!order.is_active)
     }
 
+    fn get_filled_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<FilledOrder> {
+        self.0.paged_get("/api/v1/fills", filter)
+    }
+
+    fn get_filled_orders_by_id<'a>(&'a self, order_id: &'a OrderId) -> PagedStream<FilledOrder> {
+        self.0.paged_get("/api/v1/fills", [("orderId", order_id)])
+    }
+
     async fn get_order_by_client_id(&self, client_id: &str) -> Result<Order, Error> {
         self.0
             .get(&format!("/api/v1/order/client-order/{}", client_id), ())
@@ -99,7 +110,11 @@ impl TradeApi for Trade_ {
         self.0.paged_get("/api/v1/orders", filter)
     }
 
-    async fn get_recent_orders<'a>(&'a self) -> Result<Vec<Order>, Error> {
+    async fn get_recent_filled_orders(&self) -> Result<Vec<FilledOrder>, Error> {
+        self.0.get("/api/v1/limit/fills", ()).await
+    }
+
+    async fn get_recent_orders(&self) -> Result<Vec<Order>, Error> {
         self.0.get("/api/v1/limit/orders", ()).await
     }
 
@@ -128,6 +143,29 @@ impl TradeApi for Trade_ {
             .await
             .map(|r| r.order_id)
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilledOrder {
+    pub symbol: Symbol,
+    pub trade_id: String,
+    pub order_id: OrderId,
+    pub counter_order_id: OrderId,
+    pub side: TradeSide,
+    pub price: Decimal,
+    pub size: Decimal,
+    pub funds: Decimal,
+    #[serde(rename = "type")]
+    pub order_type: OrderType,
+    pub fee: Decimal,
+    pub fee_currency: CurrencyCode,
+    #[serde(flatten)]
+    pub stop: StopOrder,
+    pub liquidity: TradeLiquidity,
+    pub force_taker: bool,
+    pub created_at: Time,
+    pub trade_type: TradeType,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -392,15 +430,15 @@ impl Default for SelfTradePrevention {
 #[serde(rename_all = "snake_case", tag = "stop")]
 pub enum StopOrder {
     Entry {
-        #[serde(rename = "stopTriggered")]
+        #[serde(default, rename = "stopTriggered")]
         triggered: bool,
-        #[serde(rename = "stopPrice")]
+        #[serde(default, rename = "stopPrice")]
         price: Decimal,
     },
     Loss {
-        #[serde(rename = "stopTriggered")]
+        #[serde(default, rename = "stopTriggered")]
         triggered: bool,
-        #[serde(rename = "stopPrice")]
+        #[serde(default, rename = "stopPrice")]
         price: Decimal,
     },
     #[serde(other)]
@@ -477,6 +515,17 @@ impl hash::Hash for Trade {
         self.sequence.hash(state);
         self.time.hash(state);
     }
+}
+
+#[derive(
+    Clone, Copy, Debug, Deserialize, Display, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum TradeLiquidity {
+    #[display(fmt = "maker")]
+    Maker,
+    #[display(fmt = "taker")]
+    Taker,
 }
 
 #[derive(
