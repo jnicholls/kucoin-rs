@@ -31,8 +31,7 @@ pub trait TradeApi {
     fn get_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<Order>;
     async fn get_recent_filled_orders(&self) -> Result<Vec<FilledOrder>, Error>;
     async fn get_recent_orders(&self) -> Result<Vec<Order>, Error>;
-    async fn margin_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
-    async fn spot_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
+    async fn place_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
 }
 
 struct Trade_(SClient);
@@ -118,28 +117,24 @@ impl TradeApi for Trade_ {
         self.0.get("/api/v1/limit/orders", ()).await
     }
 
-    async fn margin_order(&self, req: &OrderRequest) -> Result<OrderId, Error> {
+    async fn place_order(&self, req: &OrderRequest) -> Result<OrderId, Error> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Response {
             order_id: OrderId,
         }
 
-        self.0
-            .post::<_, Response>("/api/v1/margin/order", req)
-            .await
-            .map(|r| r.order_id)
-    }
-
-    async fn spot_order(&self, req: &OrderRequest) -> Result<OrderId, Error> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Response {
-            order_id: OrderId,
-        }
+        let path = match req {
+            OrderRequest { stop: Some(_), .. } => "/api/v1/stop-order",
+            OrderRequest {
+                trade_type: TradeType::Margin,
+                ..
+            } => "/api/v1/margin/order",
+            _ => "/api/v1/orders",
+        };
 
         self.0
-            .post::<_, Response>("/api/v1/orders", req)
+            .post::<_, Response>(path, req)
             .await
             .map(|r| r.order_id)
     }
@@ -274,7 +269,10 @@ pub struct OrderRequest {
     #[serde(flatten)]
     order_type: OrderTypeRequest,
     remark: Option<String>,
+    #[serde(flatten)]
+    stop: Option<StopOrder>,
     stp: SelfTradePrevention,
+    trade_type: TradeType,
 }
 
 impl OrderRequest {
@@ -286,7 +284,9 @@ impl OrderRequest {
     ) -> Self {
         let client_order_id = client_order_id.into();
         let remark = None;
+        let stop = None;
         let stp = Default::default();
+        let trade_type = TradeType::Trade;
 
         Self {
             client_order_id,
@@ -294,8 +294,15 @@ impl OrderRequest {
             symbol,
             order_type,
             remark,
+            stop,
             stp,
+            trade_type,
         }
+    }
+
+    pub fn margin(self) -> Self {
+        let trade_type = TradeType::Margin;
+        Self { trade_type, ..self }
     }
 
     pub fn remark(self, remark: impl Into<String>) -> Self {
@@ -305,6 +312,16 @@ impl OrderRequest {
 
         let remark = Some(remark.into());
         Self { remark, ..self }
+    }
+
+    pub fn spot(self) -> Self {
+        let trade_type = TradeType::Trade;
+        Self { trade_type, ..self }
+    }
+
+    pub fn stop(self, stop: StopOrder) -> Self {
+        let stop = Some(stop);
+        Self { stop, ..self }
     }
 
     pub fn stp(self, stp: SelfTradePrevention) -> Self {
@@ -320,8 +337,10 @@ pub enum OrderType {
     #[display(fmt = "market")]
     Market,
     #[display(fmt = "stop_limit")]
+    #[serde(alias = "limit_stop")]
     StopLimit,
     #[display(fmt = "stop_market")]
+    #[serde(alias = "market_stop")]
     StopMarket,
 }
 
