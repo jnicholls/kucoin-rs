@@ -27,6 +27,7 @@ pub trait TradeApi {
     async fn get_order_by_client_id(&self, client_id: &str) -> Result<Order, Error>;
     async fn get_order_by_id(&self, order_id: &OrderId) -> Result<Order, Error>;
     fn get_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<Order>;
+    async fn get_recent_orders<'a>(&'a self) -> Result<Vec<Order>, Error>;
     async fn margin_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
     async fn spot_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
 }
@@ -96,6 +97,10 @@ impl TradeApi for Trade_ {
 
     fn get_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<Order> {
         self.0.paged_get("/api/v1/orders", filter)
+    }
+
+    async fn get_recent_orders<'a>(&'a self) -> Result<Vec<Order>, Error> {
+        self.0.get("/api/v1/limit/orders", ()).await
     }
 
     async fn margin_order(&self, req: &OrderRequest) -> Result<OrderId, Error> {
