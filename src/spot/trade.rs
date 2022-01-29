@@ -168,8 +168,58 @@ impl OrderId {
     }
 }
 
-#[derive(Serialize)]
-pub struct OrderFilter {}
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderFilter {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symbol: Option<Symbol>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    side: Option<TradeSide>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trade_type: Option<TradeType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_at: Option<Time>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_at: Option<Time>,
+}
+
+impl OrderFilter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn active_only(self) -> Self {
+        let status = Some("active".to_string());
+        Self { status, ..self }
+    }
+
+    pub fn done_only(self) -> Self {
+        let status = Some("done".to_string());
+        Self { status, ..self }
+    }
+
+    pub fn side(self, side: TradeSide) -> Self {
+        let side = Some(side);
+        Self { side, ..self }
+    }
+
+    pub fn trade_type(self, trade_type: TradeType) -> Self {
+        let trade_type = Some(trade_type);
+        Self { trade_type, ..self }
+    }
+
+    pub fn time(self, start_at: Time, end_at: Time) -> Self {
+        let start_at = Some(start_at);
+        let end_at = Some(end_at);
+        Self {
+            start_at,
+            end_at,
+            ..self
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
