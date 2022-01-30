@@ -144,7 +144,7 @@ impl TradeApi for Trade_ {
 #[serde(rename_all = "camelCase")]
 pub struct FilledOrder {
     pub symbol: Symbol,
-    pub trade_id: String,
+    pub trade_id: TradeId,
     pub order_id: OrderId,
     pub counter_order_id: OrderId,
     pub side: TradeSide,
@@ -273,6 +273,7 @@ pub struct OrderRequest {
     stop: Option<StopOrder>,
     stp: SelfTradePrevention,
     trade_type: TradeType,
+    auto_borrow: bool,
 }
 
 impl OrderRequest {
@@ -287,6 +288,7 @@ impl OrderRequest {
         let stop = None;
         let stp = Default::default();
         let trade_type = TradeType::Trade;
+        let auto_borrow = true;
 
         Self {
             client_order_id,
@@ -297,6 +299,7 @@ impl OrderRequest {
             stop,
             stp,
             trade_type,
+            auto_borrow,
         }
     }
 
@@ -337,7 +340,7 @@ pub enum OrderType {
     #[display(fmt = "market")]
     Market,
     #[display(fmt = "stop_limit")]
-    #[serde(alias = "limit_stop")]
+    #[serde(alias = "limit_stop", alias = "stop")]
     StopLimit,
     #[display(fmt = "stop_market")]
     #[serde(alias = "market_stop")]
@@ -533,6 +536,18 @@ impl hash::Hash for Trade {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.sequence.hash(state);
         self.time.hash(state);
+    }
+}
+
+#[derive(
+    Clone, Debug, Deref, Deserialize, Display, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(transparent)]
+pub struct TradeId(String);
+
+impl TradeId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
     }
 }
 

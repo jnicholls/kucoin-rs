@@ -27,7 +27,7 @@ use crate::{
     client::SClient,
     error::*,
     spot::*,
-    time::{ts_nanoseconds_str, Time},
+    time::{ts_nanoseconds, ts_nanoseconds_str, Time},
     utils::is_false,
 };
 
@@ -164,6 +164,65 @@ impl Connection {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AccountBalanceNotice {
+    pub total: Decimal,
+    pub available: Decimal,
+    pub available_change: Decimal,
+    pub currency: CurrencyCode,
+    pub hold: Decimal,
+    pub hold_change: Decimal,
+    pub relation_event: AccountBalanceNoticeEvent,
+    pub time: Time,
+}
+
+#[derive(Clone, Copy, Debug, Display, Deserialize, Serialize)]
+pub enum AccountBalanceNoticeEvent {
+    #[display(fmt = "main.deposit")]
+    #[serde(rename = "main.deposit")]
+    MainDeposit,
+    #[display(fmt = "main.withrdaw_hold")]
+    #[serde(rename = "main.withrdaw_hold")]
+    MainWithdrawHold,
+    #[display(fmt = "main.withrdaw_done")]
+    #[serde(rename = "main.withrdaw_done")]
+    MainWithdrawDone,
+    #[display(fmt = "main.transfer")]
+    #[serde(rename = "main.transfer")]
+    MainTransfer,
+    #[display(fmt = "main.other")]
+    #[serde(rename = "main.other")]
+    MainOther,
+    #[display(fmt = "trade.hold")]
+    #[serde(rename = "trade.hold")]
+    TradeHold,
+    #[display(fmt = "trade.settled")]
+    #[serde(rename = "trade.settled", alias = "trade.setted")]
+    TradeSettled,
+    #[display(fmt = "trade.transfer")]
+    #[serde(rename = "trade.transfer")]
+    TradeTransfer,
+    #[display(fmt = "trade.other")]
+    #[serde(rename = "trade.other")]
+    TradeOther,
+    #[display(fmt = "margin.hold")]
+    #[serde(rename = "margin.hold")]
+    MarginHold,
+    #[display(fmt = "margin.settled")]
+    #[serde(rename = "margin.settled", alias = "margin.setted")]
+    MarginSettled,
+    #[display(fmt = "margin.transfer")]
+    #[serde(rename = "margin.transfer")]
+    MarginTransfer,
+    #[display(fmt = "margin.other")]
+    #[serde(rename = "margin.other")]
+    MarginOther,
+    #[display(fmt = "other")]
+    #[serde(rename = "other")]
+    Other,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Level3Trade {
     #[serde(with = "ts_nanoseconds_str")]
     pub time: Time,
@@ -172,9 +231,9 @@ pub struct Level3Trade {
     pub side: TradeSide,
     pub price: Decimal,
     pub size: Decimal,
-    pub trade_id: String,
-    pub taker_order_id: String,
-    pub maker_order_id: String,
+    pub trade_id: TradeId,
+    pub taker_order_id: OrderId,
+    pub maker_order_id: OrderId,
 }
 
 #[derive(Clone, Debug)]
@@ -271,6 +330,72 @@ impl LiveOrderBook {
     pub async fn still_alive(&self) -> bool {
         self.inner.read().await.still_alive
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase", tag = "type")]
+pub enum OrderChange {
+    Open(OrderChangeDetails),
+    Match(OrderChangeMatch),
+    Filled(OrderChangeDetails),
+    Canceled(OrderChangeDetails),
+    Update(OrderChangeDetails),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderChangeDetails {
+    pub symbol: Symbol,
+    pub order_type: OrderType,
+    pub side: TradeSide,
+    pub order_id: OrderId,
+    #[serde(with = "ts_nanoseconds")]
+    pub order_time: Time,
+    pub size: Decimal,
+    pub filled_size: Decimal,
+    pub price: Decimal,
+    #[serde(rename = "clientOid")]
+    pub client_order_id: String,
+    pub remain_size: Decimal,
+    #[serde(with = "ts_nanoseconds")]
+    pub ts: Time,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderChangeMatch {
+    #[serde(flatten)]
+    pub details: OrderChangeDetails,
+    pub match_price: Decimal,
+    pub match_size: Decimal,
+    pub trade_id: TradeId,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase", tag = "type")]
+pub enum StopOrderEvent {
+    Open(StopOrderEventDetails),
+    Triggered(StopOrderEventDetails),
+    Cancel(StopOrderEventDetails),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopOrderEventDetails {
+    pub created_at: Time,
+    pub order_id: OrderId,
+    pub order_price: Decimal,
+    pub order_type: OrderType,
+    pub side: TradeSide,
+    pub size: Decimal,
+    #[serde(flatten)]
+    pub stop: StopOrder,
+    pub symbol: Symbol,
+    pub trade_type: TradeType,
+    #[serde(default)]
+    pub trigger_success: bool,
+    #[serde(with = "ts_nanoseconds")]
+    pub ts: Time,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -446,6 +571,11 @@ impl From<TopicAccountBalance> for Topic {
     }
 }
 
+impl TopicToData for TopicAccountBalance {
+    type Data = AccountBalanceNotice;
+    type Output = Self::Data;
+}
+
 #[derive(Clone, Debug)]
 pub struct TopicAdvancedOrder(Topic);
 
@@ -459,6 +589,11 @@ impl From<TopicAdvancedOrder> for Topic {
     fn from(t: TopicAdvancedOrder) -> Self {
         t.0
     }
+}
+
+impl TopicToData for TopicAdvancedOrder {
+    type Data = StopOrderEvent;
+    type Output = Self::Data;
 }
 
 #[derive(Clone, Debug)]
@@ -534,6 +669,11 @@ impl From<TopicOrderChange> for Topic {
     fn from(t: TopicOrderChange) -> Self {
         t.0
     }
+}
+
+impl TopicToData for TopicOrderChange {
+    type Data = OrderChange;
+    type Output = Self::Data;
 }
 
 #[derive(Clone, Debug)]
