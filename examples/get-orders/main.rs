@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     client
         .trade()
-        .get_orders(&OrderFilter::new())
+        .orders(&OrderFilter::new())
         .try_for_each(|orders| async move {
             println!("{:?}", orders);
             Ok(())

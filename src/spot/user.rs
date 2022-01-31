@@ -10,7 +10,6 @@ use futures_util::{
     stream::FuturesUnordered,
     TryFutureExt, TryStreamExt,
 };
-use num_derive::FromPrimitive;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -18,7 +17,9 @@ use serde_json::json;
 use crate::{
     client::SClient,
     error::Error,
+    pagination::PagedStream,
     spot::{Currency, CurrencyCode, OrderId, Symbol},
+    time::Time,
     utils::iter_to_csv,
 };
 
@@ -33,6 +34,8 @@ pub trait UserApi {
         account_type: AccountType,
         currency: CurrencyCode,
     ) -> Result<AccountId, Error>;
+
+    fn ledgers(&self) -> PagedStream<AccountLedger>;
 
     async fn refresh_account(&self, account: &mut Account) -> Result<(), Error>;
 
@@ -102,6 +105,10 @@ impl UserApi for User {
             )
             .await
             .map(|r| r.id)
+    }
+
+    fn ledgers(&self) -> PagedStream<AccountLedger> {
+        self.0.paged_get("/api/v1/accounts/ledgers", ())
     }
 
     async fn refresh_account(&self, account: &mut Account) -> Result<(), Error> {
@@ -235,28 +242,36 @@ impl AccountId {
     }
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Deserialize,
-    Display,
-    Eq,
-    FromPrimitive,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AccountLedger {
+    pub id: String,
+    pub currency: CurrencyCode,
+    pub amount: Decimal,
+    pub fee: Decimal,
+    pub balance: Decimal,
+    pub account_type: AccountType,
+    pub biz_type: String,
+    pub direction: TransferDirection,
+    pub created_at: Time,
+}
+
+#[derive(
+    Clone, Copy, Debug, Deserialize, Display, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum AccountType {
     #[display(fmt = "MAIN")]
+    #[serde(alias = "MAIN")]
     Main,
     #[display(fmt = "TRADE")]
+    #[serde(alias = "TRADE")]
     Trade,
     #[display(fmt = "MARGIN")]
+    #[serde(alias = "MARGIN")]
     Margin,
     #[display(fmt = "POOL")]
+    #[serde(alias = "POOL")]
     Pool,
 }
 
@@ -301,6 +316,17 @@ impl AccountsRequest {
 pub struct Fee {
     pub taker_fee_rate: Decimal,
     pub maker_fee_rate: Decimal,
+}
+
+#[derive(
+    Clone, Copy, Debug, Deserialize, Display, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum TransferDirection {
+    #[display(fmt = "in")]
+    In,
+    #[display(fmt = "out")]
+    Out,
 }
 
 #[derive(Clone, Debug, Serialize)]

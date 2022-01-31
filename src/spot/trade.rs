@@ -24,13 +24,13 @@ pub trait TradeApi {
     ) -> Result<Vec<OrderId>, Error>;
     async fn cancel_order_by_client_id(&self, client_id: &str) -> Result<bool, Error>;
     async fn cancel_order_by_id(&self, order_id: &OrderId) -> Result<bool, Error>;
-    fn get_filled_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<FilledOrder>;
-    fn get_filled_orders_by_id<'a>(&'a self, order_id: &'a OrderId) -> PagedStream<FilledOrder>;
-    async fn get_order_by_client_id(&self, client_id: &str) -> Result<Order, Error>;
-    async fn get_order_by_id(&self, order_id: &OrderId) -> Result<Order, Error>;
-    fn get_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<Order>;
-    async fn get_recent_filled_orders(&self) -> Result<Vec<FilledOrder>, Error>;
-    async fn get_recent_orders(&self) -> Result<Vec<Order>, Error>;
+    fn filled_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<FilledOrder>;
+    fn filled_orders_by_id<'a>(&'a self, order_id: &'a OrderId) -> PagedStream<FilledOrder>;
+    async fn order_by_client_id(&self, client_id: &str) -> Result<Order, Error>;
+    async fn order_by_id(&self, order_id: &OrderId) -> Result<Order, Error>;
+    fn orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<Order>;
+    async fn recent_filled_orders(&self) -> Result<Vec<FilledOrder>, Error>;
+    async fn recent_orders(&self) -> Result<Vec<Order>, Error>;
     async fn place_order(&self, req: &OrderRequest) -> Result<OrderId, Error>;
 }
 
@@ -72,7 +72,7 @@ impl TradeApi for Trade_ {
             .delete::<_, ()>(&format!("/api/v1/order/client-order/{}", client_id), ())
             .await?;
 
-        let order = self.get_order_by_client_id(client_id).await?;
+        let order = self.order_by_client_id(client_id).await?;
         Ok(!order.is_active)
     }
 
@@ -81,39 +81,39 @@ impl TradeApi for Trade_ {
             .delete::<_, ()>(&format!("/api/v1/orders/{}", order_id), ())
             .await?;
 
-        let order = self.get_order_by_id(order_id).await?;
+        let order = self.order_by_id(order_id).await?;
         Ok(!order.is_active)
     }
 
-    fn get_filled_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<FilledOrder> {
+    fn filled_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<FilledOrder> {
         self.0.paged_get("/api/v1/fills", filter)
     }
 
-    fn get_filled_orders_by_id<'a>(&'a self, order_id: &'a OrderId) -> PagedStream<FilledOrder> {
+    fn filled_orders_by_id<'a>(&'a self, order_id: &'a OrderId) -> PagedStream<FilledOrder> {
         self.0.paged_get("/api/v1/fills", [("orderId", order_id)])
     }
 
-    async fn get_order_by_client_id(&self, client_id: &str) -> Result<Order, Error> {
+    async fn order_by_client_id(&self, client_id: &str) -> Result<Order, Error> {
         self.0
             .get(&format!("/api/v1/order/client-order/{}", client_id), ())
             .await
     }
 
-    async fn get_order_by_id(&self, order_id: &OrderId) -> Result<Order, Error> {
+    async fn order_by_id(&self, order_id: &OrderId) -> Result<Order, Error> {
         self.0
             .get(&format!("/api/v1/orders/{}", order_id), ())
             .await
     }
 
-    fn get_orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<Order> {
+    fn orders<'a>(&'a self, filter: &'a OrderFilter) -> PagedStream<Order> {
         self.0.paged_get("/api/v1/orders", filter)
     }
 
-    async fn get_recent_filled_orders(&self) -> Result<Vec<FilledOrder>, Error> {
+    async fn recent_filled_orders(&self) -> Result<Vec<FilledOrder>, Error> {
         self.0.get("/api/v1/limit/fills", ()).await
     }
 
-    async fn get_recent_orders(&self) -> Result<Vec<Order>, Error> {
+    async fn recent_orders(&self) -> Result<Vec<Order>, Error> {
         self.0.get("/api/v1/limit/orders", ()).await
     }
 
@@ -332,7 +332,9 @@ impl OrderRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Display, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Display, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderType {
     #[display(fmt = "limit")]
@@ -426,7 +428,7 @@ impl Default for OrderVisibility {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Display, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Display, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum SelfTradePrevention {
     #[display(fmt = "DC")]
     #[serde(rename = "DC")]

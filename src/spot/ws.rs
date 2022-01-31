@@ -175,7 +175,9 @@ pub struct AccountBalanceNotice {
     pub time: Time,
 }
 
-#[derive(Clone, Copy, Debug, Display, Deserialize, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Display, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
 pub enum AccountBalanceNoticeEvent {
     #[display(fmt = "main.deposit")]
     #[serde(rename = "main.deposit")]
