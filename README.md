@@ -6,14 +6,14 @@ This library is a personal project that I have decided to release publicly. Ther
 *Note: While Spot, Margin, and Futures APIs are the goal for this API, currently the focus of development is on the Spot & Market markets*
 
 ## Todo
-* [ ] Finish Spot APIs
+* [x] Finish Spot APIs
 * [ ] Futures API
 * [ ] Documentation
 * [ ] Publish on crates.io
 * [ ] Unit tests with deterministic replay (e.g. something akin to Ruby's [VCR](https://github.com/vcr/vcr))
 * [ ] GitHub Actions CI setup
 * [ ] All the cool badges (link to docs, CI status, MSRV, etc.)
-* [x] Open source some of my higher-level APIs (e.g. in-memory LiveOrderBook)
+* [x] In-memory Live Order Book implementation
 * [ ] Provide bridges to async-std and smog async runtimes
 
 ## Installation
