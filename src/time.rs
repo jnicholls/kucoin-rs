@@ -1,7 +1,7 @@
 use std::fmt;
 
 use chrono::{serde as chrono_serde, DateTime, TimeZone, Utc};
-use derive_more::{Constructor, Deref, DerefMut, From};
+use derive_more::{Constructor, Deref, DerefMut, From, Into};
 use serde::{de, ser, Deserialize, Serialize};
 
 #[derive(
@@ -15,6 +15,7 @@ use serde::{de, ser, Deserialize, Serialize};
     Eq,
     From,
     Hash,
+    Into,
     PartialEq,
     PartialOrd,
     Ord,
