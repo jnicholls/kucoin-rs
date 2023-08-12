@@ -8,12 +8,13 @@ use async_trait::async_trait;
 use derive_more::{Deref, Display};
 use rust_decimal::Decimal;
 use serde::{de, Deserialize, Serialize};
+use serde_with::{de::DeserializeAsWrap, serde_as, TimestampSeconds};
 
 use crate::{
     client::SClient,
     error::{Error, ParseSnafu},
     spot::trade::Trade,
-    time::{ts_seconds, ts_seconds_str, Time},
+    time::Time,
     utils::iter_to_csv,
 };
 
@@ -222,17 +223,6 @@ impl<'de> de::Deserialize<'de> for Kline {
     where
         D: serde::Deserializer<'de>,
     {
-        struct TimeStr(Time);
-
-        impl<'de> de::Deserialize<'de> for TimeStr {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                Ok(Self(ts_seconds_str::deserialize(deserializer)?))
-            }
-        }
-
         struct KlineVisitor;
 
         impl<'de> de::Visitor<'de> for KlineVisitor {
@@ -246,10 +236,10 @@ impl<'de> de::Deserialize<'de> for Kline {
             where
                 V: de::SeqAccess<'de>,
             {
-                let time: TimeStr = seq
-                    .next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let time = time.0;
+                let time: DeserializeAsWrap<Time, TimestampSeconds<String>> =
+                    seq.next_element()?
+                        .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let time = time.into_inner();
                 let open = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(1, &self))?;
@@ -415,13 +405,14 @@ impl TryFrom<String> for KlineInterval {
     }
 }
 
+#[serde_as]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KlinesRequest {
     symbol: Symbol,
-    #[serde(with = "ts_seconds")]
+    #[serde_as(as = "TimestampSeconds")]
     start_at: Time,
-    #[serde(with = "ts_seconds")]
+    #[serde_as(as = "TimestampSeconds")]
     end_at: Time,
     #[serde(rename = "type")]
     interval: KlineInterval,

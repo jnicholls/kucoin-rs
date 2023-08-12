@@ -1,12 +1,13 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+use base64::prelude::{Engine, BASE64_STANDARD};
 use hmac::{Hmac, Mac};
 use serde::{de::DeserializeOwned, ser::Serialize, Deserialize};
 use sha2::Sha256;
 use snafu::ResultExt;
 
-use crate::error::*;
+use crate::{error::*, time::Time};
 
 const FUTURES_API: &str = "https://api-futures.kucoin.com";
 const SPOT_API: &str = "https://api.kucoin.com";
@@ -22,16 +23,17 @@ macro_rules! http_verb {
             I: Serialize,
             O: DeserializeOwned,
         {
+            let host = A::host();
             let method = stringify!($method).to_ascii_uppercase();
             let payload = serde_json::to_string(&data).context(JsonEncodingSnafu)?;
             let endpoint = path;
 
-            let url = format!("{}{}", A::host(), endpoint);
+            let url = format!("{host}{endpoint}");
             let req = self.http.$method(&url);
 
             let req = if let Some(creds) = &self.creds {
-                let timestamp = chrono::Utc::now().timestamp_millis().to_string();
-                let prehash = format!("{}{}{}{}", timestamp, method, endpoint, payload);
+                let timestamp = Time::now().to_string();
+                let prehash = format!("{timestamp}{method}{endpoint}{payload}");
                 req.header("KC-API-KEY", creds.key())
                     .header("KC-API-SIGN", creds.sign(prehash))
                     .header("KC-API-TIMESTAMP", timestamp)
@@ -53,20 +55,21 @@ macro_rules! http_verb {
             I: Serialize,
             O: DeserializeOwned,
         {
+            let host = A::host();
             let method = stringify!($method).to_ascii_uppercase();
             let query = serde_urlencoded::to_string(data).context(UrlEncodingSnafu)?;
             let endpoint = if query.is_empty() {
                 path.to_string()
             } else {
-                format!("{}?{}", path, query)
+                format!("{path}?{query}")
             };
 
-            let url = format!("{}{}", A::host(), endpoint);
+            let url = format!("{host}{endpoint}");
             let req = self.http.$method(&url);
 
             let req = if let Some(creds) = &self.creds {
-                let timestamp = chrono::Utc::now().timestamp_millis().to_string();
-                let prehash = format!("{}{}{}", timestamp, method, endpoint);
+                let timestamp = Time::now().to_string();
+                let prehash = format!("{timestamp}{method}{endpoint}");
                 req.header("KC-API-KEY", creds.key())
                     .header("KC-API-SIGN", creds.sign(prehash))
                     .header("KC-API-TIMESTAMP", timestamp)
@@ -243,6 +246,6 @@ impl Credentials {
         let mut hmac = Hmac::<Sha256>::new_from_slice(self.secret.as_bytes())
             .expect("secret should be of the correct byte length");
         hmac.update(data.as_ref());
-        base64::encode(hmac.finalize().into_bytes())
+        BASE64_STANDARD.encode(hmac.finalize().into_bytes())
     }
 }
